@@ -1,0 +1,193 @@
+app:
+  display_name: "Immich"
+  publisher: "FUTO"
+  description: |
+    Immich is a high-performance, self-hosted photo and video management solution. It provides a modern, mobile-friendly interface for backing up, organizing, and browsing your personal media library — similar to Google Photos but fully under your control.
+
+    ## Features
+
+    - Automatic photo and video backup from iOS and Android apps
+    - Timeline view, map view, and album organization
+    - Multi-user support with fine-grained sharing controls
+    - Facial recognition and smart search (requires ML-enabled variant)
+    - External library support for indexing existing photo collections
+    - Duplicate detection and storage management tools
+    - EXIF/metadata extraction and display
+    - Live photo and RAW file support
+
+    ## Ideal For
+
+    - Users migrating away from Google Photos or iCloud who want full data ownership
+    - Families and teams who want a shared, private photo library
+    - Self-hosters looking for a polished, actively developed media solution
+
+    ## Good to Know
+
+    - This build does NOT include machine learning features (facial recognition, smart search, object detection). These require significantly more RAM and CPU. Contact support if you need the ML-enabled variant.
+    - Initial setup requires creating an admin account via the web UI credentials you provide during installation.
+    - Mobile apps are available on the App Store and Google Play — point them at your Immich URL to enable automatic backup.
+
+  short_description: "Self-hosted photo and video backup solution"
+  icon: icon.png
+  categories:
+    - "Media"
+    - "Sync"
+  devsite: "https://immich.app"
+  source_repo: "https://github.com/immich-app/immich"
+
+
+image:
+  name: "immich"
+  version: "1.137"
+  tag: "1.137"
+
+
+container:
+  cmd: null
+  user: null
+  group_add: null
+  memory: 2
+  memory_swap: 0
+  memory_reservation: 0
+  cpus: 0
+  init: false
+  cap_add: null
+  cap_drop: null
+  shm_size: null
+  pids_limit: null
+
+
+networking:
+  subdomain: "immich"
+  is_web_app: true
+  requires_domain: true
+  ssl: true
+  multiple_domains: false
+  tcp_passthrough: false
+
+
+behavior:
+  app_slots: 1
+  expect_callback: true
+  callback_requires_auth: false
+  restart_text: null
+  can_update: true
+  update_text: "Back up your photos before updating. Immich runs database migrations automatically on startup."
+  allow_downgrade: false
+  ssl_restart: false
+
+
+install:
+  pre_description: "Choose an email and password for your Immich admin account. You will use these credentials to log in to the web interface and manage users."
+  post_description: "Your Immich instance is ready! Log in with the credentials you chose during installation. Download the Immich mobile app and point it at your Login URL to enable automatic photo backup."
+  custom_description: null
+
+
+ports:
+  tcp:
+    range: null
+    dynamic: 0
+  udp:
+    range: null
+    dynamic: 0
+  combined:
+    range: null
+    dynamic: 0
+
+
+volumes:
+  - source: "config"
+    destination: "/config"
+    permissions: "rw"
+    uid: 1000
+
+  - source: "photos"
+    destination: "/photos"
+    permissions: "rw"
+    uid: 1000
+
+
+env:
+  - key: VIRTUAL_PORT
+    value: "8080"
+    template_type: none
+
+  - key: DB_HOSTNAME
+    value: "localhost"
+    template_type: none
+
+  - key: DB_PORT
+    value: "5432"
+    template_type: none
+
+  - key: DB_USERNAME
+    value: "postgres"
+    template_type: none
+
+  - key: DB_PASSWORD
+    value: "postgres"
+    template_type: none
+
+  - key: DB_DATABASE_NAME
+    value: "immich"
+    template_type: none
+
+  - key: REDIS_HOSTNAME
+    value: "localhost"
+    template_type: none
+
+  - key: REDIS_PORT
+    value: "6379"
+    template_type: none
+
+  - key: PUID
+    value: "1000"
+    template_type: none
+
+  - key: PGID
+    value: "1000"
+    template_type: none
+
+  - key: TZ
+    value: "Etc/UTC"
+    template_type: none
+
+
+custom_fields:
+  EMAIL:
+    label: "Admin Email"
+    type: email
+    width: 6
+    default_value: ""
+    template_type: none
+    validate:
+      - required
+      - email
+    params: {}
+
+  PASSWORD:
+    label: "Admin Password"
+    type: complexPassword
+    width: 6
+    default_value: null
+    template_type: password
+    validate:
+      - required
+      - complexPassword
+    params: {}
+
+  LOGIN_URL:
+    label: "Login URL"
+    type: externalURL
+    width: 12
+    default_value: "https://%DOMAIN.DOMAIN%/"
+    template_type: instance
+    validate: []
+    params: {}
+
+
+advanced:
+  devices: []
+  ulimits: []
+  sysctls: []
+  chains: []

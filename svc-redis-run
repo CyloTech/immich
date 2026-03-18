@@ -1,0 +1,8 @@
+#!/bin/bash
+# s6-overlay longrun service for Redis.
+# Binds to localhost only — no external access needed.
+exec gosu 1000:1000 redis-server \
+    --bind 127.0.0.1 \
+    --port 6379 \
+    --dir /config/redis \
+    --loglevel warning

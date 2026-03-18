@@ -1,0 +1,23 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+
+# Override of the base image's init-config-immich. The original runs
+#   find /app/immich ... -exec chown abc:abc {} +
+# on every boot, chowning thousands of immutable image-layer files.
+# Since those files are already correctly owned, we skip that step
+# to avoid a multi-minute startup delay on slower storage.
+
+mkdir -p \
+    /config/machine-learning/models \
+    "${IMMICH_MEDIA_LOCATION}/library"
+
+chown -R abc:abc \
+    /config
+
+chown abc:abc \
+    "${IMMICH_MEDIA_LOCATION}" \
+    "${IMMICH_MEDIA_LOCATION}"/*
+
+if [[ "${APPLY_PERMISSIONS}" == "true" ]]; then
+    lsiown -R abc:abc "${IMMICH_MEDIA_LOCATION}"
+fi

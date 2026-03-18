@@ -1,0 +1,22 @@
+#!/bin/bash
+# s6-overlay longrun service for PostgreSQL.
+# The data directory at /config/postgres is initialized by entrypoint.sh
+# before /init starts.
+#
+# LSIO's init may broaden /config permissions to 0755; PostgreSQL requires
+# the data directory to be 0700 or 0750. Fix it on every start.
+chmod 700 /config/postgres
+
+# Clean up after an unclean shutdown (SIGKILL / OOM / crash). Orphaned
+# postgres child processes may hold shared memory, preventing a fresh start.
+if [ -f /config/postgres/postmaster.pid ]; then
+    OLD_PID=$(head -1 /config/postgres/postmaster.pid)
+    if ! kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "svc-postgres: cleaning up after unclean shutdown (stale PID $OLD_PID)"
+        pkill -9 -u 1000 postgres 2>/dev/null || true
+        sleep 2
+        rm -f /config/postgres/postmaster.pid
+    fi
+fi
+
+exec gosu 1000:1000 /usr/lib/postgresql/14/bin/postgres -D /config/postgres
