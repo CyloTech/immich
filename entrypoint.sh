@@ -13,6 +13,8 @@ REDIS_DIR="/config/redis"
 FRESH_MARKER="/config/.immich_configured"
 LOCAL_URL="http://localhost:8080"
 APP_USER="1000:1000"
+CALLBACK_PENDING_FLAG="/etc/appbox_callback_pending"
+CALLBACK_HELPER="/usr/local/bin/appbox-installed-callback"
 
 # =============================================================================
 # Bootstrap: ensure UID/GID 1000 exist in the passwd/group databases.
@@ -48,25 +50,20 @@ wait_for_http() {
     done
 }
 
-callback_installed() {
-    if [[ "${SKIP_APPBOX_CALLBACK:-0}" == "1" ]]; then
-        echo "Skipping Appbox callback (SKIP_APPBOX_CALLBACK=1)"
-        return 0
+# Send the pending Appbox installed callback once Immich answers. This runs
+# in the background. The API accepts one installed callback per install or
+# update and rejects the rest (401 once the token has been used or cleared,
+# or when serverapi has already called back), so the old `until curl -f` loop
+# retried a rejected callback every 5s for the life of the container. The
+# helper retries only network errors, 408, 429 and 5xx, logs any other status
+# once and stops; the flag is cleared after the attempt.
+send_pending_callback() {
+    set +e
+    if ! wait_for_http "${LOCAL_URL}/api/server/ping" 300 2; then
+        echo "WARNING: Immich did not answer; sending the installed callback anyway."
     fi
-
-    local callback_url="https://api.cylo.net/v1/apps/installed/${INSTANCE_ID}"
-    local headers=(
-        -H "Accept: application/json"
-        -H "Content-Type:application/json"
-    )
-
-    if [[ -n "${CALLBACK_TOKEN:-}" ]]; then
-        headers+=(-H "Authorization: Bearer ${CALLBACK_TOKEN}")
-    fi
-
-    until curl -fsS -o /dev/null "${headers[@]}" -X POST "${callback_url}"; do
-        sleep 5
-    done
+    "${CALLBACK_HELPER}"
+    rm -f "${CALLBACK_PENDING_FLAG}"
 }
 
 create_admin_user() {
@@ -217,9 +214,12 @@ chown -R 1000:1000 "${REDIS_DIR}"
 # STEP 4: Appbox lifecycle (first boot / upgrade detection)
 # =============================================================================
 # Spawns a background process that waits for Immich to come up (started by
-# s6-overlay), then handles admin creation and the platform callback.
+# s6-overlay), then handles admin creation and the platform callback. The
+# callback is marked pending before CONFIG_FLAG, so a restart before it was
+# sent still sends it, but a rejected callback is not repeated.
 
 if [[ ! -f "${CONFIG_FLAG}" ]]; then
+    touch "${CALLBACK_PENDING_FLAG}"
     touch "${CONFIG_FLAG}"
 
     (
@@ -237,8 +237,10 @@ if [[ ! -f "${CONFIG_FLAG}" ]]; then
             wait_for_http "${LOCAL_URL}/api/server/ping" 300 2
         fi
 
-        callback_installed
-    ) &
+        send_pending_callback
+    ) </dev/null &
+elif [[ -f "${CALLBACK_PENDING_FLAG}" ]]; then
+    send_pending_callback </dev/null &
 fi
 
 # =============================================================================
