@@ -8,6 +8,7 @@ set -e
 CONFIG_FLAG="/etc/app_configured"
 PG_DATA="/config/postgres"
 PG_BIN="/usr/lib/postgresql/14/bin"
+PG_PRELOAD_LIBRARIES="vectors.so,vchord.so"
 REDIS_DIR="/config/redis"
 FRESH_MARKER="/config/.immich_configured"
 LOCAL_URL="http://localhost:8080"
@@ -95,6 +96,55 @@ create_admin_user() {
     return 1
 }
 
+ensure_postgres_config() {
+    local conf="${PG_DATA}/postgresql.conf"
+
+    sed -i '/^# BEGIN appbox immich postgres$/,/^# END appbox immich postgres$/d' "${conf}"
+    cat >> "${conf}" <<PGCONF
+
+# BEGIN appbox immich postgres
+listen_addresses = 'localhost'
+shared_preload_libraries = '${PG_PRELOAD_LIBRARIES}'
+# END appbox immich postgres
+PGCONF
+    chown 1000:1000 "${conf}"
+}
+
+start_postgres_for_bootstrap() {
+    echo "Starting PostgreSQL for bootstrap; waiting indefinitely for readiness..."
+
+    gosu ${APP_USER} "${PG_BIN}/pg_ctl" -D "${PG_DATA}" \
+        -o "-c shared_preload_libraries=${PG_PRELOAD_LIBRARIES}" \
+        -l "${PG_DATA}/postgresql.log" -W start
+
+    local missing_pid_checks=0
+
+    while ! gosu ${APP_USER} "${PG_BIN}/pg_isready" -h localhost -U postgres >/dev/null 2>&1; do
+        if [[ -f "${PG_DATA}/postmaster.pid" ]]; then
+            missing_pid_checks=0
+            local pid
+            pid=$(head -1 "${PG_DATA}/postmaster.pid")
+
+            if [[ -n "${pid}" ]] && ! kill -0 "${pid}" 2>/dev/null; then
+                echo "PostgreSQL exited before it became ready. Recent log output:"
+                tail -50 "${PG_DATA}/postgresql.log" || true
+                return 1
+            fi
+        else
+            missing_pid_checks=$((missing_pid_checks + 1))
+            if [[ "${missing_pid_checks}" -ge 15 ]]; then
+                echo "PostgreSQL did not create a postmaster.pid file. Recent log output:"
+                tail -50 "${PG_DATA}/postgresql.log" || true
+                return 1
+            fi
+        fi
+
+        sleep 2
+    done
+
+    echo "PostgreSQL is ready."
+}
+
 # =============================================================================
 # STEP 1: PostgreSQL data directory initialization
 # =============================================================================
@@ -115,12 +165,11 @@ if [[ ! -d "${PG_DATA}/base" ]]; then
         -U postgres \
         --auth-local=trust \
         --auth-host=trust
-
-    cat >> "${PG_DATA}/postgresql.conf" <<'PGCONF'
-listen_addresses = 'localhost'
-shared_preload_libraries = 'vectors.so,vchord.so'
-PGCONF
 fi
+
+# Keep required preload settings in place even when reusing an existing volume
+# from a failed or older install.
+ensure_postgres_config
 
 # =============================================================================
 # STEP 2: Database and extension creation
@@ -141,17 +190,19 @@ if [[ -f "${PG_DATA}/postmaster.pid" ]]; then
     fi
 fi
 
-gosu ${APP_USER} "${PG_BIN}/pg_ctl" -D "${PG_DATA}" -l "${PG_DATA}/postgresql.log" -w start
+start_postgres_for_bootstrap
 
 if ! gosu ${APP_USER} "${PG_BIN}/psql" -h localhost -U postgres -lqt \
         | cut -d \| -f 1 | grep -qw immich; then
-    echo "Creating immich database and extensions..."
+    echo "Creating immich database..."
     gosu ${APP_USER} "${PG_BIN}/createdb" -h localhost -U postgres immich
-    gosu ${APP_USER} "${PG_BIN}/psql" -h localhost -U postgres -d immich \
-        -c "CREATE EXTENSION IF NOT EXISTS vectors;"
-    gosu ${APP_USER} "${PG_BIN}/psql" -h localhost -U postgres -d immich \
-        -c "CREATE EXTENSION IF NOT EXISTS vchord CASCADE;"
 fi
+
+echo "Ensuring Immich PostgreSQL extensions are available..."
+gosu ${APP_USER} "${PG_BIN}/psql" -h localhost -U postgres -d immich \
+    -c "CREATE EXTENSION IF NOT EXISTS vectors;"
+gosu ${APP_USER} "${PG_BIN}/psql" -h localhost -U postgres -d immich \
+    -c "CREATE EXTENSION IF NOT EXISTS vchord CASCADE;"
 
 gosu ${APP_USER} "${PG_BIN}/pg_ctl" -D "${PG_DATA}" -w stop
 

@@ -38,8 +38,9 @@ app:
 
 image:
   name: "immich"
-  version: "1.137"
-  tag: "1.137"
+  version: "3.1.0-1"
+  tag: "3.1.0-1"
+  digest: "repo.cylo.net/immich@sha256:e877d3905e7cc2a2fc00a04713f437ff194b771af6780b572514a7290bc66feb"
 
 
 container:
@@ -168,6 +169,7 @@ custom_fields:
   PASSWORD:
     label: "Admin Password"
     type: complexPassword
+    sensitive: true
     width: 6
     default_value: null
     template_type: password
@@ -185,6 +187,25 @@ custom_fields:
     validate: []
     params: {}
 
+
+shared_data:
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+    destination: "/APPBOX_DATA"
+    permissions: "rw"
+    uid: 1000
+
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/storage/"
+    destination: "/APPBOX_DATA/storage"
+    permissions: "ro"
+    uid: 1000
+
+
+  # Prepare the nested mountpoint before Docker starts. Container root is
+  # remapped and cannot create this directory inside the existing apps bind.
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/storage/"
+    destination: "/appbox-mountpoints/storage"
+    permissions: "ro"
+    uid: 1000
 
 advanced:
   devices: []

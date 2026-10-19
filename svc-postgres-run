@@ -1,4 +1,6 @@
 #!/bin/bash
+set -e
+
 # s6-overlay longrun service for PostgreSQL.
 # The data directory at /config/postgres is initialized by entrypoint.sh
 # before /init starts.
@@ -6,6 +8,19 @@
 # LSIO's init may broaden /config permissions to 0755; PostgreSQL requires
 # the data directory to be 0700 or 0750. Fix it on every start.
 chmod 700 /config/postgres
+
+PG_PRELOAD_LIBRARIES="vectors.so,vchord.so"
+PG_CONF="/config/postgres/postgresql.conf"
+
+sed -i '/^# BEGIN appbox immich postgres$/,/^# END appbox immich postgres$/d' "$PG_CONF"
+cat >> "$PG_CONF" <<PGCONF
+
+# BEGIN appbox immich postgres
+listen_addresses = 'localhost'
+shared_preload_libraries = '${PG_PRELOAD_LIBRARIES}'
+# END appbox immich postgres
+PGCONF
+chown 1000:1000 "$PG_CONF"
 
 # Clean up after an unclean shutdown (SIGKILL / OOM / crash). Orphaned
 # postgres child processes may hold shared memory, preventing a fresh start.
@@ -19,4 +34,6 @@ if [ -f /config/postgres/postmaster.pid ]; then
     fi
 fi
 
-exec gosu 1000:1000 /usr/lib/postgresql/14/bin/postgres -D /config/postgres
+exec gosu 1000:1000 /usr/lib/postgresql/14/bin/postgres \
+    -D /config/postgres \
+    -c "shared_preload_libraries=${PG_PRELOAD_LIBRARIES}"

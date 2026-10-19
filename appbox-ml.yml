@@ -1,0 +1,233 @@
+app:
+  display_name: "Immich (ML)"
+  publisher: "FUTO"
+  description: |
+    Immich is a high-performance, self-hosted photo and video management solution. It provides a modern, mobile-friendly interface for backing up, organizing, and browsing your personal media library — similar to Google Photos but fully under your control.
+
+    ## Features
+
+    - Automatic photo and video backup from iOS and Android apps
+    - Timeline view, map view, and album organization
+    - Multi-user support with fine-grained sharing controls
+    - **Facial recognition** — automatically detect and group people in your photos
+    - **Smart search** — search photos by description, scene, or content using CLIP
+    - **Duplicate detection** — find and manage duplicate photos intelligently
+    - External library support for indexing existing photo collections
+    - EXIF/metadata extraction and display
+    - Live photo and RAW file support
+
+    ## Ideal For
+
+    - Users migrating away from Google Photos or iCloud who want full data ownership
+    - Families and teams who want a shared, private photo library
+    - Users who want AI-powered search, facial recognition, and duplicate detection
+
+    ## Good to Know
+
+    - This build **includes machine learning** features (facial recognition, smart search, duplicate detection). ML models (~1.5 GB) are downloaded on first use and cached in /config.
+    - ML runs on CPU. It uses more RAM and CPU than the standard (no-ML) variant. Recommended minimum 6 GB RAM.
+    - This app uses 2 app slots due to higher resource requirements.
+    - Initial setup requires creating an admin account via the web UI credentials you provide during installation.
+    - Mobile apps are available on the App Store and Google Play — point them at your Immich URL to enable automatic backup.
+
+  short_description: "Self-hosted photo and video backup with AI-powered search and facial recognition"
+  icon: icon.png
+  categories:
+    - "Media"
+    - "Sync"
+  devsite: "https://immich.app"
+  source_repo: "https://github.com/immich-app/immich"
+
+
+image:
+  name: "immich"
+  version: "3.1.0-ml"
+  tag: "3.1.0-ml"
+  digest: "repo.cylo.net/immich@sha256:0098d9206108f040b3164281b0b7f546fc303110ad71af4e15da35fb96d5c88b"
+
+
+container:
+  cmd: null
+  user: null
+  group_add: null
+  memory: 6
+  memory_swap: 0
+  memory_reservation: 0
+  cpus: 0
+  init: false
+  cap_add: null
+  cap_drop: null
+  shm_size: null
+  pids_limit: null
+
+
+networking:
+  subdomain: "immich"
+  is_web_app: true
+  requires_domain: true
+  ssl: true
+  multiple_domains: false
+  tcp_passthrough: false
+
+
+behavior:
+  app_slots: 2
+  expect_callback: true
+  callback_requires_auth: false
+  restart_text: null
+  can_update: true
+  update_text: "Back up your photos before updating. Immich runs database migrations automatically on startup. ML models may be re-downloaded if the new version requires updated models."
+  allow_downgrade: false
+  ssl_restart: false
+
+
+install:
+  pre_description: "Choose an email and password for your Immich admin account. You will use these credentials to log in to the web interface and manage users. This ML-enabled variant uses more resources — facial recognition and smart search models (~1.5 GB) will be downloaded on first use."
+  post_description: "Your Immich instance is ready! Log in with the credentials you chose during installation. Download the Immich mobile app and point it at your Login URL to enable automatic photo backup. Facial recognition and smart search will become available after ML models finish downloading."
+  custom_description: null
+
+
+ports:
+  tcp:
+    range: null
+    dynamic: 0
+  udp:
+    range: null
+    dynamic: 0
+  combined:
+    range: null
+    dynamic: 0
+
+
+volumes:
+  - source: "config"
+    destination: "/config"
+    permissions: "rw"
+    uid: 1000
+
+  - source: "photos"
+    destination: "/photos"
+    permissions: "rw"
+    uid: 1000
+
+
+env:
+  - key: VIRTUAL_PORT
+    value: "8080"
+    template_type: none
+
+  - key: DB_HOSTNAME
+    value: "localhost"
+    template_type: none
+
+  - key: DB_PORT
+    value: "5432"
+    template_type: none
+
+  - key: DB_USERNAME
+    value: "postgres"
+    template_type: none
+
+  - key: DB_PASSWORD
+    value: "postgres"
+    template_type: none
+
+  - key: DB_DATABASE_NAME
+    value: "immich"
+    template_type: none
+
+  - key: REDIS_HOSTNAME
+    value: "localhost"
+    template_type: none
+
+  - key: REDIS_PORT
+    value: "6379"
+    template_type: none
+
+  - key: PUID
+    value: "1000"
+    template_type: none
+
+  - key: PGID
+    value: "1000"
+    template_type: none
+
+  - key: TZ
+    value: "Etc/UTC"
+    template_type: none
+
+  - key: MACHINE_LEARNING_HOST
+    value: "0.0.0.0"
+    template_type: none
+
+  - key: MACHINE_LEARNING_PORT
+    value: "3003"
+    template_type: none
+
+  - key: MACHINE_LEARNING_WORKERS
+    value: "1"
+    template_type: none
+
+  - key: MACHINE_LEARNING_WORKER_TIMEOUT
+    value: "120"
+    template_type: none
+
+
+custom_fields:
+  EMAIL:
+    label: "Admin Email"
+    type: email
+    width: 6
+    default_value: ""
+    template_type: none
+    validate:
+      - required
+      - email
+    params: {}
+
+  PASSWORD:
+    label: "Admin Password"
+    type: complexPassword
+    sensitive: true
+    width: 6
+    default_value: null
+    template_type: password
+    validate:
+      - required
+      - complexPassword
+    params: {}
+
+  LOGIN_URL:
+    label: "Login URL"
+    type: externalURL
+    width: 12
+    default_value: "https://%DOMAIN.DOMAIN%/"
+    template_type: instance
+    validate: []
+    params: {}
+
+
+shared_data:
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/"
+    destination: "/APPBOX_DATA"
+    permissions: "rw"
+    uid: 1000
+
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/storage/"
+    destination: "/APPBOX_DATA/storage"
+    permissions: "ro"
+    uid: 1000
+
+
+  # Prepare the nested mountpoint before Docker starts. Container root is
+  # remapped and cannot create this directory inside the existing apps bind.
+  - source: "/cylostore/%CYLO.DISK_NAME%/%CYLO.ID%/home/apps/storage/"
+    destination: "/appbox-mountpoints/storage"
+    permissions: "ro"
+    uid: 1000
+
+advanced:
+  devices: []
+  ulimits: []
+  sysctls: []
+  chains: []

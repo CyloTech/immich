@@ -1,7 +1,7 @@
 # Stage 1: Extract PostgreSQL vector extensions from the Immich PostgreSQL image.
 # These extensions (VectorChord + pgvecto.rs) provide the vector data types and
 # indexing that Immich's database schema requires — even without ML enabled.
-FROM ghcr.io/immich-app/postgres:14-vectorchord0.3.0-pgvectors0.2.0 AS pgext
+FROM ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0 AS pgext
 
 # Stage 2: Build on the ImageGenius monolithic Immich container.
 # This image bundles the Immich server into a single container using the
@@ -9,7 +9,7 @@ FROM ghcr.io/immich-app/postgres:14-vectorchord0.3.0-pgvectors0.2.0 AS pgext
 #
 # The :noml tag excludes machine learning (facial recognition, CLIP search)
 # to reduce memory and CPU requirements for shared hosting.
-FROM ghcr.io/imagegenius/immich:noml
+FROM ghcr.io/imagegenius/immich:3.1.0-noml
 
 # Install PostgreSQL 14, Redis, and required tools.
 #
@@ -110,3 +110,20 @@ ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/init"]
 
 EXPOSE 8080
+
+# Immich 3.1.0 can open database connections before migrations create the
+# album-role enum. Postgres.js then has no serializer for that new enum array
+# and sends "owner" instead of an array literal. Use its built-in text-array
+# serializer and keep PostgreSQL's enum validation for each role.
+RUN python3 - <<'PY'
+from pathlib import Path
+import subprocess
+path = Path('/app/immich/server/dist/repositories/album.repository.js')
+source = path.read_text()
+before = 'unnest(${roles}::album_user_role_enum[])'
+after = 'unnest(${roles}::text[])::album_user_role_enum'
+if source.count(before) != 1:
+    raise SystemExit('Unexpected upstream album query; review the role-array patch')
+path.write_text(source.replace(before, after))
+subprocess.run(['node', '--check', str(path)], check=True)
+PY
