@@ -1,0 +1,8 @@
+.git
+.gitignore
+.dockerignore
+scripts
+tests
+TESTING.md
+release-record.json
+context.tgz

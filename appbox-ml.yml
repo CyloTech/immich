@@ -41,9 +41,8 @@ app:
 
 image:
   name: "immich"
-  version: "3.1.0-ml"
-  tag: "3.1.0-ml"
-  digest: "repo.cylo.net/immich@sha256:0098d9206108f040b3164281b0b7f546fc303110ad71af4e15da35fb96d5c88b"
+  version: "3.3.5-ml"
+  tag: "3.3.5-ml"
 
 
 container:

@@ -1,7 +1,9 @@
 # Stage 1: Extract PostgreSQL vector extensions from the Immich PostgreSQL image.
 # These extensions (VectorChord + pgvecto.rs) provide the vector data types and
 # indexing that Immich's database schema requires.
-FROM ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0 AS pgext
+# Pinned to the digest in upstream docker/docker-compose.yml at v3.3.5 (the same
+# image Immich 3.1.0 used, so existing databases need no extension upgrade).
+FROM ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23 AS pgext
 
 # Stage 2: Build on the ImageGenius monolithic Immich container.
 # This image bundles the Immich server AND machine learning into a single
@@ -12,7 +14,7 @@ FROM ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0 AS pgext
 # OpenVINO tags exist for GPU-accelerated variants.
 #
 # ML downloads models (~1.5 GB) on first use to /config/machine-learning/models.
-FROM ghcr.io/imagegenius/immich:3.1.0
+FROM ghcr.io/imagegenius/immich:3.3.5@sha256:44429b30189301d45d05349fc50b394e90163415c6a2e203f191d16047671374
 
 # Install PostgreSQL 14, Redis, and required tools.
 #
@@ -103,7 +105,7 @@ CMD ["/init"]
 
 EXPOSE 8080
 
-# Immich 3.1.0 can open database connections before migrations create the
+# Immich 3.1.0 to 3.3.5 can open database connections before migrations create the
 # album-role enum. Postgres.js then has no serializer for that new enum array
 # and sends "owner" instead of an array literal. Use its built-in text-array
 # serializer and keep PostgreSQL's enum validation for each role.
