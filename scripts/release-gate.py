@@ -44,6 +44,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
 '''
+# docker stop/restart wait up to 30 s for a clean shutdown; the extra time
+# covers a slow builder disk, where the kill and unmount can take minutes.
+STOP_TIMEOUT = 300
 containers, volumes = [], []
 
 
@@ -311,7 +314,7 @@ def main():
     data = create_data(base, token)
     verify_data(base, token, data)
     print('PASS fresh install: photo upload/download, second account and album', flush=True)
-    command(['docker', 'restart', '-t', '30', fresh])
+    command(['docker', 'restart', '-t', '30', fresh], timeout=STOP_TIMEOUT)
     start_callback_mock(fresh, '/tmp/gate-callback-restart.log')
     base, token = wait_ready(fresh, NEW_VERSION)
     verify_data(base, token, data)
@@ -319,17 +322,17 @@ def main():
     expect_callbacks(fresh, '/tmp/gate-callback-restart.log', 0, settle=30)
     secrets_absent_from_log(fresh)
     print('PASS restart: exact photo, accounts and album retained; no second callback; no credentials in the log', flush=True)
-    command(['docker', 'stop', '-t', '30', fresh])
+    command(['docker', 'stop', '-t', '30', fresh], timeout=STOP_TIMEOUT)
     mounts = storage('upgrade')
     old, base, token = start('baseline', old_id, mounts, OLD_VERSION)
     # Existing installations have completed schema creation. Warm the old
     # image's connection cache after migration before seeding upgrade data.
-    command(['docker', 'restart', '-t', '30', old])
+    command(['docker', 'restart', '-t', '30', old], timeout=STOP_TIMEOUT)
     base, token = wait_ready(old, OLD_VERSION)
     print('BASELINE ONLY: normal restart after schema creation before preparing existing-install data', flush=True)
     data = create_data(base, token)
     verify_data(base, token, data)
-    command(['docker', 'stop', '-t', '30', old])
+    command(['docker', 'stop', '-t', '30', old], timeout=STOP_TIMEOUT)
     upgraded, base, token = start('upgrade', EXPECTED, mounts, NEW_VERSION, '/tmp/gate-callback-upgrade.log')
     verify_data(base, token, data)
     verify_runtime(upgraded)
