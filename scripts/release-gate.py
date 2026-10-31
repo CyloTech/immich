@@ -329,7 +329,9 @@ def wait_setup_failures(name, count):
         if state != 'running':
             raise RuntimeError(name + ' state=' + state)
         p = subprocess.run(['docker', 'logs', name], capture_output=True, text=True)
-        if (p.stdout + p.stderr).count('ERROR: admin setup failed') >= count:
+        # stop_immich_server logs one line naming the web server once it is
+        # stopped (or could not be stopped).
+        if (p.stdout + p.stderr).count('the Immich web server') >= count:
             return
         time.sleep(5)
     raise RuntimeError(name + ' did not report admin setup failure ' + str(count) + ' within 900 seconds')

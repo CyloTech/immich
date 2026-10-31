@@ -126,12 +126,31 @@ create_admin_user() {
 
 # Stop the Immich web server so its admin sign-up page is not served while
 # the instance has no admin. s6 keeps it down until the container restarts.
+# s6-svc signals only the service's main process, and the immich-api worker
+# that listens on 8080 is its child: it would be left running, so signal the
+# service's whole process group and wait until nothing answers.
 stop_immich_server() {
-    if /command/s6-svc -d "${IMMICH_SERVER_SERVICE}" 2>/dev/null; then
-        echo "Stopped the Immich web server until the next restart"
-    else
+    local pid i
+    pid=$(/command/s6-svstat -o pid "${IMMICH_SERVER_SERVICE}" 2>/dev/null)
+    [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || pid=""
+
+    /command/s6-svc -d "${IMMICH_SERVER_SERVICE}" 2>/dev/null
+    [[ -n "${pid}" ]] && kill -TERM -- "-${pid}" 2>/dev/null
+
+    for i in $(seq 1 30); do
+        curl -s -o /dev/null --max-time 2 "${LOCAL_URL}/api/server/ping" || break
+        if [[ "${i}" -eq 20 && -n "${pid}" ]]; then
+            kill -KILL -- "-${pid}" 2>/dev/null
+        fi
+        sleep 1
+    done
+    /command/s6-svwait -D -t 10000 "${IMMICH_SERVER_SERVICE}" 2>/dev/null
+
+    if curl -s -o /dev/null --max-time 2 "${LOCAL_URL}/api/server/ping"; then
         echo "WARNING: could not stop the Immich web server"
+        return 1
     fi
+    echo "Stopped the Immich web server until the next restart"
 }
 
 # Finish an install or update in the background: on a volume without
