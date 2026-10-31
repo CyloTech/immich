@@ -189,13 +189,15 @@ custom_fields:
     label: "Admin Password"
     type: complexPassword
     sensitive: true
+    revealable: true
     width: 6
     default_value: null
     template_type: password
     validate:
       - required
       - complexPassword
-    params: {}
+    params:
+      showOnInstalled: true
 
   LOGIN_URL:
     label: "Login URL"
