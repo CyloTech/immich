@@ -70,7 +70,10 @@ docker run -d --name immich-test \
 - [x] s6-overlay starts `svc-redis` — Redis running in foreground
 - [x] s6-overlay starts the Immich server
 - [x] Immich responds at `http://localhost:8080` (`curl -sf localhost:8080/api/server/ping`)
-- [x] Background setup detects fresh install, creates admin via API
+- [x] Background setup detects fresh install, creates admin via API (body built with jq, so a
+      password containing `"` or `\` works; `tests/test-admin-setup.sh` and the release gates)
+- [x] Admin creation that Immich rejects fails closed: no marker, no installed callback, the
+      web server is stopped and the next start retries (release gate `rejected` phase)
 - [x] `/config/.immich_configured` marker file is created
 - [x] API callback is attempted (skipped locally via SKIP_APPBOX_CALLBACK)
 - [x] You can log in at `http://localhost:8080` with the provided email/password
@@ -242,6 +245,7 @@ docker exec immich-test /moduser.sh
 ## 10. Security
 
 - [x] Admin password uses `complexPassword` type with validation
+- [x] Admin setup never puts the password on a command line or in the container log
 - [x] No hardcoded credentials in the image
 - [x] PostgreSQL only listens on localhost (not 0.0.0.0)
 - [x] Redis only binds to 127.0.0.1

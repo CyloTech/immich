@@ -107,7 +107,10 @@ RUN mkdir -p /etc/s6-overlay/s6-rc.d/svc-microservices/dependencies.d && \
 ADD entrypoint.sh /entrypoint.sh
 ADD moduser.sh /moduser.sh
 ADD appbox-installed-callback /usr/local/bin/appbox-installed-callback
-RUN chmod +x /entrypoint.sh /moduser.sh && chmod 755 /usr/local/bin/appbox-installed-callback
+# entrypoint.sh builds the admin sign-up request with jq, which the base
+# image provides; fail the build if it stops doing so.
+RUN chmod +x /entrypoint.sh /moduser.sh && chmod 755 /usr/local/bin/appbox-installed-callback && \
+    jq --version
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/init"]

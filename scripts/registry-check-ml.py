@@ -4,8 +4,8 @@ import json
 import subprocess
 import sys
 
-EXPECTED = 'repo.cylo.net/immich:3.3.5-ml'
-PREVIOUS = 'repo.cylo.net/immich:3.1.0-ml'
+EXPECTED = 'repo.cylo.net/immich:3.3.5-1-ml'
+PREVIOUS = 'repo.cylo.net/immich:3.3.5-ml'
 
 
 def registry_absent(image):

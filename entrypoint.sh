@@ -15,6 +15,7 @@ LOCAL_URL="http://localhost:8080"
 APP_USER="1000:1000"
 CALLBACK_PENDING_FLAG="/etc/appbox_callback_pending"
 CALLBACK_HELPER="/usr/local/bin/appbox-installed-callback"
+IMMICH_SERVER_SERVICE="/run/service/svc-server"
 
 # =============================================================================
 # Bootstrap: ensure UID/GID 1000 exist in the passwd/group databases.
@@ -66,31 +67,96 @@ send_pending_callback() {
     rm -f "${CALLBACK_PENDING_FLAG}"
 }
 
+# Print true or false from Immich's isInitialized flag, which is true once
+# an admin account exists. Prints nothing and fails when Immich does not
+# answer with a boolean.
+server_initialized() {
+    curl -sf --max-time 10 "${LOCAL_URL}/api/server/config" 2>/dev/null \
+        | jq -er '.isInitialized | if type == "boolean" then . else error end' 2>/dev/null
+}
+
+# Create the admin account from EMAIL and PASSWORD. Returns 0 once Immich
+# reports an admin account, made now or already there, and 1 otherwise.
+# jq builds the request body from the environment, so quotes or backslashes
+# in the password stay valid JSON and the password never reaches a command
+# line or the log. Only isInitialized decides that an admin exists: a 400
+# while it is still false means Immich rejected the account.
 create_admin_user() {
-    local attempts=30
+    local attempts=60
     local i=0
+    local initialized http_code
 
     while [[ "${i}" -lt "${attempts}" ]]; do
-        local http_code
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Content-Type: application/json" \
-            -X POST "${LOCAL_URL}/api/auth/admin-sign-up" \
-            --data "{\"email\":\"${EMAIL}\",\"name\":\"Admin\",\"password\":\"${PASSWORD}\"}")
+        initialized=$(server_initialized)
 
-        if [[ "${http_code}" == "201" ]]; then
-            echo "Admin user created successfully"
-            return 0
-        elif [[ "${http_code}" == "400" ]]; then
-            echo "Admin user already exists (HTTP 400), skipping"
+        if [[ "${initialized}" == "true" ]]; then
+            echo "Immich already has an admin account, skipping admin creation"
             return 0
         fi
 
+        if [[ "${initialized}" == "false" ]]; then
+            http_code=$(jq -n '{email: env.EMAIL, name: "Admin", password: env.PASSWORD}' \
+                | curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+                    -H "Content-Type: application/json" \
+                    -X POST "${LOCAL_URL}/api/auth/admin-sign-up" \
+                    --data-binary @-)
+
+            if [[ "$(server_initialized)" == "true" ]]; then
+                if [[ "${http_code}" == "201" ]]; then
+                    echo "Admin user created successfully"
+                else
+                    echo "Immich has an admin account (sign-up answered HTTP ${http_code})"
+                fi
+                return 0
+            fi
+
+            if [[ "${http_code}" == "400" ]]; then
+                echo "ERROR: Immich rejected the admin account (HTTP 400) and still has no admin"
+                return 1
+            fi
+        fi
+
         i=$((i + 1))
-        sleep 2
+        sleep 5
     done
 
-    echo "WARNING: Admin user creation failed after ${attempts} attempts"
+    echo "ERROR: Immich still has no admin account after ${attempts} attempts"
     return 1
+}
+
+# Stop the Immich web server so its admin sign-up page is not served while
+# the instance has no admin. s6 keeps it down until the container restarts.
+stop_immich_server() {
+    if /command/s6-svc -d "${IMMICH_SERVER_SERVICE}" 2>/dev/null; then
+        echo "Stopped the Immich web server until the next restart"
+    else
+        echo "WARNING: could not stop the Immich web server"
+    fi
+}
+
+# Finish an install or update in the background: on a volume without
+# FRESH_MARKER make sure the admin account exists, then send the pending
+# installed callback. Without an admin it fails closed: no marker, no
+# callback, and the web server stops. CALLBACK_PENDING_FLAG stays, so a
+# restart or re-create tries again.
+complete_lifecycle() {
+    set +e
+
+    if [[ ! -f "${FRESH_MARKER}" ]]; then
+        echo "Fresh install detected, waiting for Immich to start..."
+        wait_for_http "${LOCAL_URL}/api/server/ping" 300 2
+
+        if ! create_admin_user; then
+            echo "ERROR: admin setup failed; the install is not reported as finished. Restart the app to try again."
+            stop_immich_server
+            return 1
+        fi
+        touch "${FRESH_MARKER}"
+    else
+        echo "Existing data found, skipping admin creation"
+    fi
+
+    send_pending_callback
 }
 
 ensure_postgres_config() {
@@ -213,34 +279,20 @@ chown -R 1000:1000 "${REDIS_DIR}"
 # =============================================================================
 # STEP 4: Appbox lifecycle (first boot / upgrade detection)
 # =============================================================================
-# Spawns a background process that waits for Immich to come up (started by
-# s6-overlay), then handles admin creation and the platform callback. The
-# callback is marked pending before CONFIG_FLAG, so a restart before it was
-# sent still sends it, but a rejected callback is not repeated.
+# A new container (fresh install or update) marks the installed callback
+# pending, then sets CONFIG_FLAG. While the callback is pending, every start
+# runs complete_lifecycle in the background: it waits for Immich (started by
+# s6-overlay), creates the admin on a fresh volume and sends the callback.
+# A restart before that finished, or after admin setup failed, tries again;
+# a rejected callback is not repeated.
 
 if [[ ! -f "${CONFIG_FLAG}" ]]; then
     touch "${CALLBACK_PENDING_FLAG}"
     touch "${CONFIG_FLAG}"
+fi
 
-    (
-        set +e
-
-        if [[ ! -f "${FRESH_MARKER}" ]]; then
-            echo "Fresh install detected, waiting for Immich to start..."
-            wait_for_http "${LOCAL_URL}/api/server/ping" 300 2
-
-            if create_admin_user; then
-                touch "${FRESH_MARKER}"
-            fi
-        else
-            echo "Upgrade detected: existing data found, skipping admin creation"
-            wait_for_http "${LOCAL_URL}/api/server/ping" 300 2
-        fi
-
-        send_pending_callback
-    ) </dev/null &
-elif [[ -f "${CALLBACK_PENDING_FLAG}" ]]; then
-    send_pending_callback </dev/null &
+if [[ -f "${CALLBACK_PENDING_FLAG}" ]]; then
+    complete_lifecycle </dev/null &
 fi
 
 # =============================================================================

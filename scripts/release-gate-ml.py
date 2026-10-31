@@ -15,12 +15,16 @@ import time
 import urllib.error
 import urllib.request
 
-EXPECTED = 'repo.cylo.net/immich:3.3.5-ml'
-PREVIOUS = 'repo.cylo.net/immich:3.1.0-ml'
-NEW_VERSION, OLD_VERSION = '3.3.5', '3.1.0'
+EXPECTED = 'repo.cylo.net/immich:3.3.5-1-ml'
+PREVIOUS = 'repo.cylo.net/immich:3.3.5-ml'
+NEW_VERSION, OLD_VERSION = '3.3.5', '3.3.5'
 RUN = 'immich-ml-release-' + secrets.token_hex(6)
 LABEL = 'appbox.release-gate=' + RUN
-PASSWORD = secrets.token_urlsafe(24) + '!aA1'
+# The fresh install's password has the quote and backslash that broke the
+# admin sign-up body before 3.3.5-1. The previous image cannot create an
+# admin with it, so the upgrade baseline uses a URL-safe password.
+PASSWORD = secrets.token_urlsafe(24) + '"\\\'!aA1'
+BASELINE_PASSWORD = secrets.token_urlsafe(24) + '!aA1'
 EMAIL = 'release-gate@example.invalid'
 PHOTO = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGO0qdjCQApgIkk1w6gG4gATkergYFQDMYDkUAIAf4QBiHBubAwAAAAASUVORK5CYII=')
 CALLBACK_PORT = '18080'
@@ -104,8 +108,12 @@ def request(base, path, method='GET', payload=None, token=None, raw=False, conte
         raise RuntimeError('HTTP ' + str(error.code) + ' on ' + method + ' ' + path) from None
 
 
-def wait_ready(name, version):
-    base = 'http://127.0.0.1:' + command(['docker', 'port', name, '8080/tcp']).rsplit(':', 1)[1]
+def base_url(name):
+    return 'http://127.0.0.1:' + command(['docker', 'port', name, '8080/tcp']).rsplit(':', 1)[1]
+
+
+def wait_ready(name, version, password=PASSWORD):
+    base = base_url(name)
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:
         state = command(['docker', 'inspect', '--format', '{{.State.Status}}', name])
@@ -115,7 +123,7 @@ def wait_ready(name, version):
             info = request(base, '/api/server/version')
             if '.'.join(str(info[k]) for k in ('major', 'minor', 'patch')) != version:
                 raise RuntimeError('Unexpected application version')
-            token = login(base)
+            token = login(base, password)
             if command(['docker', 'exec', name, 'test', '-f', '/config/.immich_configured']) == '':
                 return base, token
         except (RuntimeError, OSError, json.JSONDecodeError):
@@ -165,18 +173,18 @@ def expect_callbacks(name, log, count, settle=20):
 def secrets_absent_from_log(name):
     p = subprocess.run(['docker', 'logs', name], capture_output=True, text=True)
     output = p.stdout + p.stderr
-    if PASSWORD in output or CALLBACK_TOKEN in output:
+    if any(secret in output for secret in (PASSWORD, BASELINE_PASSWORD, CALLBACK_TOKEN)):
         raise RuntimeError('A credential appeared in the container log')
 
 
-def start(phase, image, mounts, version, callback_log=None):
+def launch(phase, image, mounts, callback_log=None, password=PASSWORD, email=EMAIL):
     # Candidate phases send the installed callback to a mock API inside the
     # container. Old published images post to the live API in a retry loop, so
     # their callback stays disabled.
     name = RUN + '-' + phase
     containers.append(name)
     args = ['docker', 'run', '-d', '--platform', 'linux/amd64', '--name', name, '--label', LABEL,
-            '--memory', '6g', '-p', '127.0.0.1::8080', '-e', 'PASSWORD', '-e', 'EMAIL=' + EMAIL,
+            '--memory', '6g', '-p', '127.0.0.1::8080', '-e', 'PASSWORD', '-e', 'EMAIL=' + email,
             '-e', 'DB_HOSTNAME=localhost', '-e', 'DB_PORT=5432', '-e', 'DB_USERNAME=postgres',
             '-e', 'DB_PASSWORD=postgres', '-e', 'DB_DATABASE_NAME=immich',
             '-e', 'REDIS_HOSTNAME=localhost', '-e', 'REDIS_PORT=6379',
@@ -190,10 +198,15 @@ def start(phase, image, mounts, version, callback_log=None):
         args += ['-e', 'SKIP_APPBOX_CALLBACK=1', '-e', 'INSTANCE_ID=' + RUN]
     for volume, destination in mounts:
         args += ['-v', volume + ':' + destination]
-    command(args + [image], env={**os.environ, 'PASSWORD': PASSWORD, 'CALLBACK_TOKEN': CALLBACK_TOKEN})
+    command(args + [image], env={**os.environ, 'PASSWORD': password, 'CALLBACK_TOKEN': CALLBACK_TOKEN})
     if callback_log:
         start_callback_mock(name, callback_log)
-    base, token = wait_ready(name, version)
+    return name
+
+
+def start(phase, image, mounts, version, callback_log=None, password=PASSWORD):
+    name = launch(phase, image, mounts, callback_log, password)
+    base, token = wait_ready(name, version, password)
     print('PASS ' + phase + ': correct version, readiness, admin login and persistent install marker', flush=True)
     if callback_log:
         expect_callbacks(name, callback_log, 1)
@@ -358,6 +371,74 @@ def verify_smart_search(base, token, data):
     raise RuntimeError('Uploaded fixture was not returned by smart search')
 
 
+def admin_setup_tests():
+    # Run tests/test-admin-setup.sh against the candidate's own entrypoint,
+    # callback helper, jq and curl.
+    script = (Path(__file__).resolve().parent.parent / 'tests' / 'test-admin-setup.sh').read_text()
+    result = subprocess.run(['docker', 'run', '-i', '--rm', '--platform', 'linux/amd64', '--label', LABEL,
+                             '--entrypoint', 'bash', '-e', 'ENTRYPOINT_UNDER_TEST=/entrypoint.sh',
+                             '-e', 'HELPER_UNDER_TEST=/usr/local/bin/appbox-installed-callback',
+                             EXPECTED, '-s'], input=script, capture_output=True, text=True, timeout=600)
+    if result.returncode:
+        print(result.stdout[-3000:], file=sys.stderr, flush=True)
+        raise RuntimeError('tests/test-admin-setup.sh failed in the candidate image')
+    print('PASS tests/test-admin-setup.sh in the candidate image', flush=True)
+
+
+def wait_setup_failures(name, count):
+    deadline = time.monotonic() + 900
+    while time.monotonic() < deadline:
+        state = command(['docker', 'inspect', '--format', '{{.State.Status}}', name])
+        if state != 'running':
+            raise RuntimeError(name + ' state=' + state)
+        p = subprocess.run(['docker', 'logs', name], capture_output=True, text=True)
+        if (p.stdout + p.stderr).count('ERROR: admin setup failed') >= count:
+            return
+        time.sleep(5)
+    raise RuntimeError(name + ' did not report admin setup failure ' + str(count) + ' within 900 seconds')
+
+
+def expect_closed(name, callback_log):
+    if subprocess.run(['docker', 'exec', name, 'test', '-e', '/config/.immich_configured']).returncode == 0:
+        raise RuntimeError('Install marker set without an admin account')
+    command(['docker', 'exec', name, 'test', '-f', '/etc/appbox_callback_pending'])
+    if command(['docker', 'exec', name, '/command/s6-svstat', '-o', 'up', '/run/service/svc-server']) != 'false':
+        raise RuntimeError('Immich web server still running without an admin account')
+    base = base_url(name)
+    for _ in range(5):
+        try:
+            request(base, '/api/server/ping')
+        except (RuntimeError, OSError):
+            time.sleep(2)
+            continue
+        raise RuntimeError('Immich answered without an admin account')
+    users = command(['docker', 'exec', name, 'gosu', '1000:1000', '/usr/lib/postgresql/14/bin/psql', '-XAt',
+                     '-h', 'localhost', '-U', 'postgres', '-d', 'immich', '-c', 'SELECT count(*) FROM "user"'])
+    if users != '0':
+        raise RuntimeError('Unexpected user rows after a rejected admin account')
+    expect_callbacks(name, callback_log, 0)
+    secrets_absent_from_log(name)
+
+
+def verify_fail_closed():
+    # Immich rejects the admin account (here an invalid email): the install
+    # must stay unfinished, with no marker, no callback and the web server
+    # stopped. A restart tries again; a container re-created on the same
+    # volumes with valid details finishes the install.
+    mounts = storage('rejected')
+    rejected = launch('rejected', EXPECTED, mounts, '/tmp/gate-callback-rejected.log', email='not-an-email')
+    wait_setup_failures(rejected, 1)
+    expect_closed(rejected, '/tmp/gate-callback-rejected.log')
+    print('PASS rejected admin: no marker, no callback, web server stopped, no users, no credentials in the log', flush=True)
+    command(['docker', 'restart', '-t', '30', rejected], timeout=STOP_TIMEOUT)
+    start_callback_mock(rejected, '/tmp/gate-callback-rejected-restart.log')
+    wait_setup_failures(rejected, 2)
+    expect_closed(rejected, '/tmp/gate-callback-rejected-restart.log')
+    print('PASS rejected admin after restart: setup retried and failed closed again', flush=True)
+    command(['docker', 'stop', '-t', '30', rejected], timeout=STOP_TIMEOUT)
+    return start('retried', EXPECTED, mounts, NEW_VERSION, '/tmp/gate-callback-retried.log')
+
+
 def main():
     if len(sys.argv) != 2 or sys.argv[1] != EXPECTED:
         raise RuntimeError('Unexpected image reference')
@@ -369,6 +450,7 @@ def main():
         print(result.stdout[-3000:], file=sys.stderr, flush=True)
         raise RuntimeError('tests/test-installed-callback.sh failed')
     print('PASS tests/test-installed-callback.sh', flush=True)
+    admin_setup_tests()
     command(['docker', 'pull', PREVIOUS], timeout=900)
     old_id = command(['docker', 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', PREVIOUS])
     print('Previous image: ' + old_id, flush=True)
@@ -379,7 +461,7 @@ def main():
     data = create_data(base, token)
     verify_data(base, token, data)
     verify_smart_search(base, token, data)
-    print('PASS fresh install: photo upload/download, second account and album', flush=True)
+    print('PASS fresh install: admin password with a quote and backslash logs in; photo upload/download, second account and album', flush=True)
     command(['docker', 'restart', '-t', '30', fresh], timeout=STOP_TIMEOUT)
     start_callback_mock(fresh, '/tmp/gate-callback-restart.log')
     base, token = wait_ready(fresh, NEW_VERSION)
@@ -392,18 +474,19 @@ def main():
     print('PASS restart: exact photo, accounts and album retained; no second callback; no credentials in the log', flush=True)
     command(['docker', 'stop', '-t', '30', fresh], timeout=STOP_TIMEOUT)
     mounts = storage('upgrade')
-    old, base, token = start('baseline', old_id, mounts, OLD_VERSION)
+    old, base, token = start('baseline', old_id, mounts, OLD_VERSION, password=BASELINE_PASSWORD)
     # Existing installations have completed schema creation. Warm the old
     # image's connection cache after migration before seeding upgrade data.
     command(['docker', 'restart', '-t', '30', old], timeout=STOP_TIMEOUT)
-    base, token = wait_ready(old, OLD_VERSION)
+    base, token = wait_ready(old, OLD_VERSION, BASELINE_PASSWORD)
     print('BASELINE ONLY: normal restart after schema creation before preparing existing-install data', flush=True)
     verify_ml(old)
     data = create_data(base, token)
     verify_data(base, token, data)
     verify_smart_search(base, token, data)
     command(['docker', 'stop', '-t', '30', old], timeout=STOP_TIMEOUT)
-    upgraded, base, token = start('upgrade', EXPECTED, mounts, NEW_VERSION, '/tmp/gate-callback-upgrade.log')
+    upgraded, base, token = start('upgrade', EXPECTED, mounts, NEW_VERSION, '/tmp/gate-callback-upgrade.log',
+                                  password=BASELINE_PASSWORD)
     verify_data(base, token, data)
     verify_runtime(upgraded)
     verify_album_regression(upgraded)
@@ -412,17 +495,21 @@ def main():
     secrets_absent_from_log(upgraded)
     print('PASS ' + PREVIOUS.rsplit(':', 1)[1] + ' to ' + EXPECTED.rsplit(':', 1)[1] +
           ' upgrade: exact photo, accounts, credentials and album retained', flush=True)
-    new_password = secrets.token_urlsafe(24) + '!bB2'
+    new_password = secrets.token_urlsafe(24) + '"\\\'!bB2'
     command(['docker', 'exec', upgraded, '/moduser.sh', new_password])
     login(base, new_password)
     try:
-        login(base)
+        login(base, BASELINE_PASSWORD)
     except RuntimeError as error:
         if 'HTTP 401' not in str(error):
             raise
     else:
         raise RuntimeError('Old password still works after reset')
     print('PASS password reset: new login succeeds, old login rejected', flush=True)
+    command(['docker', 'stop', '-t', '30', upgraded], timeout=STOP_TIMEOUT)
+    retried, base, token = verify_fail_closed()
+    secrets_absent_from_log(retried)
+    print('PASS re-created after a rejected admin: admin login, marker and one installed callback', flush=True)
     spec = importlib.util.spec_from_file_location('registry_check', Path(__file__).with_name('registry-check-ml.py'))
     registry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(registry)

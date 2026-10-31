@@ -7,9 +7,11 @@
 #     callback token carried in INSTANCE_ID;
 #   - entrypoint.sh's STEP 4 (run from a sandbox, since the PostgreSQL setup
 #     before it needs the image) hands off to /init straight away, creates the
-#     admin user on a fresh install, sends a pending callback once in the
-#     background (also after a restart, and without retrying a rejection) and
-#     clears the pending flag, which it sets before /etc/app_configured.
+#     admin user on a fresh install (also after a restart during setup),
+#     sends a pending callback once in the background (also after a restart,
+#     and without retrying a rejection) and clears the pending flag, which it
+#     sets before /etc/app_configured.
+#   tests/test-admin-setup.sh covers admin creation itself.
 #
 # Usage: tests/test-installed-callback.sh
 set -u
@@ -245,12 +247,14 @@ flag_order_check() {
 entrypoint="${repo_root}/entrypoint.sh"
 
 # The entrypoint initialises PostgreSQL and Redis before STEP 4, which needs
-# the image. Build a sandbox from its real STEP 4 block and functions
-# (wait_for_http, send_pending_callback, a stub create_admin_user) followed by
-# `exec "$@"`, with the markers, flag, helper and URL pointed at the scratch
-# directory.
+# the image. Build a sandbox from its real STEP 4 blocks and functions
+# (wait_for_http, send_pending_callback, complete_lifecycle, a stub
+# create_admin_user) followed by `exec "$@"`, with the markers, flag, helper
+# and URL pointed at the scratch directory.
 #   state: fresh (no marker, no data), upgrade (data marker only),
-#   restart-pending (CONFIG_FLAG and pending flag) or restart (CONFIG_FLAG).
+#   restart-pending (CONFIG_FLAG and pending flag), restart-setup (CONFIG_FLAG
+#   and pending flag, no data marker: restarted before admin setup finished)
+#   or restart (CONFIG_FLAG).
 entrypoint_case() {
     local state=$1 codes=$2 want_requests=$3
     start_mock "${codes}"
@@ -265,19 +269,26 @@ entrypoint_case() {
         echo "CALLBACK_HELPER=${helper}"
         sed -n '/^wait_for_http() {$/,/^}$/p' "${entrypoint}"
         sed -n '/^send_pending_callback() {$/,/^}$/p' "${entrypoint}"
+        sed -n '/^complete_lifecycle() {$/,/^}$/p' "${entrypoint}"
         echo 'create_admin_user() { echo "admin created"; }'
         sed -n '/^if \[\[ ! -f "\${CONFIG_FLAG}" \]\]; then$/,/^fi$/p' "${entrypoint}"
+        sed -n '/^if \[\[ -f "\${CALLBACK_PENDING_FLAG}" \]\]; then$/,/^fi$/p' "${entrypoint}"
         echo 'exec "$@"'
     } >"${sandbox}"
     case "${state}" in
         upgrade) touch "${work}/immich_configured" ;;
         restart-pending) touch "${work}/immich_configured" "${work}/app_configured" "${work}/callback_pending" ;;
+        restart-setup) touch "${work}/app_configured" "${work}/callback_pending" ;;
         restart) touch "${work}/immich_configured" "${work}/app_configured" ;;
     esac
     run_sandboxed_entrypoint "${sandbox}" "entrypoint ${state} codes=${codes}" "${want_requests}"
     [[ -f "${work}/app_configured" ]] || fail "entrypoint ${state}: /etc/app_configured was not created"
-    if [[ "${state}" == fresh ]] && ! { grep -q '^admin created$' "${work}/output" && [[ -f "${work}/immich_configured" ]]; }; then
-        fail "entrypoint fresh: admin user was not created before the callback"
+    if [[ "${state}" == fresh || "${state}" == restart-setup ]] \
+        && ! { grep -q '^admin created$' "${work}/output" && [[ -f "${work}/immich_configured" ]]; }; then
+        fail "entrypoint ${state}: admin user was not created before the callback"
+    fi
+    if [[ "${state}" != fresh && "${state}" != restart-setup ]] && grep -q '^admin created$' "${work}/output"; then
+        fail "entrypoint ${state}: admin creation ran on existing data"
     fi
     stop_mock
 }
@@ -287,6 +298,7 @@ entrypoint_case upgrade 200 1
 entrypoint_case upgrade 401 1
 entrypoint_case upgrade 403 1
 entrypoint_case restart-pending 503,200 2
+entrypoint_case restart-setup 200 1
 entrypoint_case restart 200 0
 
 if grep -q 'apps/installed' "${entrypoint}"; then
