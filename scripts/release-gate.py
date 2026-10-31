@@ -49,8 +49,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
 '''
 # docker stop/restart wait up to 30 s for a clean shutdown; the extra time
-# covers a slow builder disk, where the kill and unmount can take minutes.
-STOP_TIMEOUT = 300
+# covers a slow builder disk, where the kill and unmount can take minutes
+# (about 10 minutes under concurrent builds on 2026-10-31).
+STOP_TIMEOUT = 1200
 containers, volumes = [], []
 
 
