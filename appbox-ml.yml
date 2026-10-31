@@ -43,6 +43,7 @@ image:
   name: "immich"
   version: "3.3.5-1-ml"
   tag: "3.3.5-1-ml"
+  digest: "repo.cylo.net/immich@sha256:3fa8926497f219c58438ad9c27ba8157c7eeeeca50d0b0b25b5c1420282677f8"
 
 
 container:
